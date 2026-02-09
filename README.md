@@ -83,6 +83,12 @@
 
 ![加载镜像](screenshots/chajian.png)
 
+
+### Flag搜索
+
+![加载镜像](screenshots/flagsearch.png)
+
+
 ## 📦 下载安装
 
 ### Windows
