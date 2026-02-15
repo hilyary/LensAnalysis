@@ -169,6 +169,21 @@
 - **GitHub**: https://github.com/hilyary/LensAnalysis
 - **Issues**: https://github.com/hilyary/LensAnalysis/issues
 
+##💡 关于支持
+
+  析镜完全免费，但开发和维护需要大量时间精力。
+  如果你觉得有用，欢迎支持：
+
+  ⭐ Star 本项目
+  📢 推荐给更多人
+  ☕ 为项目献爱心(请备注个人ID，谢谢) 
+  ![主界面](screenshots/zsm.png)
+
+
+  感谢每一位支持者！
+
+
+
 ---
 
 **析镜 LensAnalysis** - 让内存取证更简单
