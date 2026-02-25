@@ -1,6 +1,6 @@
 # 析镜 LensAnalysis
 
-专业的内存取证分析工具，基于 Volatility 3 框架开发，为安全研究人员、CTF 爱好者和应急响应人员提供强大的内存镜像分析能力。
+专业的内存取证分析工具，基于 Volatility 3 框架开发，为安全研究人员、CTF 爱好者和应急响应人员提供强大的内存镜像分析能力【新增Linux符号表自动制作功能】。
 
 ![Windows](https://img.shields.io/badge/Windows-10%2F11-blue)
 ![macOS](https://img.shields.io/badge/macOS-12%2B-blue)
