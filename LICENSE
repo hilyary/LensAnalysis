@@ -1,38 +1,30 @@
-GNU GENERAL PUBLIC LICENSE
-Version 3, 29 June 2007
+LensAnalysis Non-Commercial License
+Version 1.0
 
 Copyright (C) 2026 hilyary
 
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-The full text of the GNU General Public License v3 can be found at:
-https://www.gnu.org/licenses/gpl-3.0.txt
-
 ---
 
-ADDITIONAL TERMS FOR LENSANALYSIS
+LensAnalysis 非商业许可协议
 
 Copyright (c) 2026 hilyary
 
-本项目在 GPL v3 协议的基础上，增加以下补充条款：
-
-一、商业使用限制
+一、授权范围
 ------------
 
-虽然 GPL v3 协议允许商业使用，但本项目有额外的商业使用限制：
+在遵守本协议全部条款的前提下，作者授予你一项免费的、非独占的、不可转让的许可：
 
-1. 未经作者书面许可，禁止将本软件用于任何商业用途，包括但不限于：
+1. 你可以出于任何非商业目的使用、复制、修改本软件。
+2. 你可以分发本软件的原始版本或你的修改版本，前提是：
+   - 随附本协议的完整副本；
+   - 保留原作者及版权信息；
+   - 你的修改版本同样以本协议授权，不得附加额外限制。
+3. 本协议不授予任何商标权。未经作者书面许可，不得以作者名义或本项目名义进行宣传或暗示背书。
+
+二、商业使用限制
+------------
+
+1. 未经作者书面许可，禁止将本软件或其修改版本用于任何商业用途，包括但不限于：
    - 直接销售本软件或其修改版本
    - 将本软件集成到商业产品中
    - 利用本软件提供付费服务
@@ -44,14 +36,14 @@ Copyright (c) 2026 hilyary
 
 3. 未经授权的商业使用将被视为违反本协议，作者保留追究法律责任的权利。
 
-二、署名要求
+三、署名要求
 ------------
 
 1. 任何形式的分发、修改或衍生作品，必须明确标注原作者信息。
 2. 不得将修改后的版本作为原作者官方版本发布。
 3. 不得移除或修改软件中的版权声明。
 
-三、合法使用
+四、合法使用
 ------------
 
 本软件仅用于合法的内存取证和安全研究目的：
@@ -70,7 +62,7 @@ Copyright (c) 2026 hilyary
    - 任何形式的网络攻击活动
    - 其他违反法律法规的行为
 
-四、免责声明
+五、免责声明
 ------------
 
 1. 软件按"现状"提供，作者不对软件的准确性、完整性、可靠性做任何保证。
@@ -81,7 +73,7 @@ Copyright (c) 2026 hilyary
 
 4. 用户因违反法律法规使用本软件而产生的一切法律责任，由用户自行承担。
 
-五、知识产权
+六、知识产权
 ------------
 
 1. 本软件的所有知识产权归原作者所有。
@@ -89,6 +81,15 @@ Copyright (c) 2026 hilyary
 2. Volatility 3 框架的知识产权归其原作者所有。
 
 3. 本软件使用的第三方库受各自的开源协议约束。
+
+七、协议终止
+------------
+
+1. 你一旦违反本协议任一条款，本协议授予你的许可即自动终止。
+
+2. 协议终止后，你须立即停止使用本软件，并销毁你所持有的全部副本及其修改版本。
+
+3. 本协议第三、五、六、七条在协议终止后继续有效。
 
 ***
 
@@ -99,4 +100,4 @@ Copyright (c) 2026 hilyary
 邮箱：hil_yary@163.com
 GitHub: https://github.com/hilyary/LensAnalysis
 
-最后更新日期：2026年2月2日
+最后更新日期：2026年9月15日
