@@ -362,6 +362,66 @@ class VolatilityWrapper:
         logger.info(f"JSON renderer 解析 {plugin_name} 结果: {len(results)} 条记录")
         return results
 
+    def _parse_json_cmdscan_rows(self, output: str, plugin_name: str) -> List[Dict]:
+        """解析 cmdscan/consoles 的 JSON renderer 输出。
+
+        Windows 上官方 vol.exe（PyInstaller 打包）忽略 PYTHONIOENCODING/PYTHONUTF8，
+        中文系统管道输出默认 GBK，文本 renderer 遇到无法编码的字符（如 U+EBD6）会崩溃。
+        JSON renderer 的 ensure_ascii 输出是纯 ASCII，不受控制台编码影响。
+        树形结构保留在 __children 中，层级数即为文本输出的 '*' 个数。
+        """
+        payload = self._extract_json_payload(output)
+        if not payload:
+            return []
+        try:
+            data = json.loads(payload)
+        except Exception as e:
+            logger.warning(f"解析 JSON renderer 输出失败: {e}")
+            return []
+
+        def cell(value: Any) -> str:
+            if value is None:
+                return ''
+            if isinstance(value, int) and not isinstance(value, bool):
+                # ConsoleInfo/Address 列在 JSON 里是整数，文本 renderer 显示为 0x...
+                return hex(value)
+            return str(value)
+
+        results: List[Dict] = []
+
+        def walk(rows: Any, level: int) -> None:
+            if not isinstance(rows, list):
+                return
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                pid = row.get('PID', 0)
+                if not isinstance(pid, int):
+                    pid = 0
+                results.append({
+                    'pid': pid,
+                    'process': cell(row.get('Process')),
+                    'console_info': cell(row.get('ConsoleInfo')),
+                    'property': cell(row.get('Property')),
+                    'address': cell(row.get('Address')),
+                    'data': cell(row.get('Data')),
+                    'level': level,
+                })
+                walk(row.get('__children'), level + 1)
+
+        walk(data, 0)
+        logger.info(f"JSON renderer 解析 {plugin_name} 结果: {len(results)} 条记录")
+        return results
+
+    def _json_retry_parser_for(self, plugin_name: str) -> Optional[Any]:
+        """返回插件对应的 JSON renderer 输出解析器，无解析器返回 None。"""
+        lower = plugin_name.lower()
+        if 'filescan' in lower:
+            return self._parse_json_filescan_rows
+        if 'cmdscan' in lower or 'consoles' in lower:
+            return self._parse_json_cmdscan_rows
+        return None
+
     def _retry_with_json_renderer(
         self,
         cmd: List[str],
@@ -369,7 +429,10 @@ class VolatilityWrapper:
         env: Dict[str, str],
         timeout: int = 300,
     ) -> Optional[List[Dict]]:
-        if 'filescan' not in plugin_name.lower():
+        """文本 renderer 编码失败时，改用 JSON renderer 重跑。"""
+        parser = self._json_retry_parser_for(plugin_name)
+        if parser is None:
+            logger.warning(f"文本渲染编码失败，但 {plugin_name} 暂无 JSON 解析器，跳过重试")
             return None
 
         json_cmd = self._insert_renderer_arg(cmd, plugin_name, 'json')
@@ -387,7 +450,7 @@ class VolatilityWrapper:
         if result.returncode != 0:
             logger.warning(f"JSON renderer 重试失败: {result.stderr[:500] if result.stderr else 'unknown'}")
             return None
-        parsed = self._parse_json_filescan_rows(result.stdout, plugin_name)
+        parsed = parser(result.stdout, plugin_name)
         return parsed if parsed else None
 
     def _is_windows_netstat_tcpip_symbol_error(self, plugin_name: str, stderr: str) -> bool:
@@ -1289,8 +1352,8 @@ class VolatilityWrapper:
                             return [{
                                 '_error': 'output_encoding_error',
                                 '_message': (
-                                    'Volatility 在 Windows 文本输出阶段遇到无法编码的文件名字符，'
-                                    '且 JSON renderer 重试失败。'
+                                    'Volatility 在 Windows 文本输出阶段遇到无法编码的字符，'
+                                    '且 JSON renderer 重试失败或该插件暂不支持 JSON 重试。'
                                 )
                             }]
 
@@ -1330,8 +1393,8 @@ class VolatilityWrapper:
                     return [{
                         '_error': 'output_encoding_error',
                         '_message': (
-                            'Volatility 在 Windows 文本输出阶段遇到无法编码的文件名字符，'
-                            '且 JSON renderer 重试失败。\n\n'
+                            'Volatility 在 Windows 文本输出阶段遇到无法编码的字符，'
+                            '且 JSON renderer 重试失败或该插件暂不支持 JSON 重试。\n\n'
                             '这不是镜像路径或符号表问题；插件已经开始扫描，但文本表格渲染崩溃。\n'
                             '请清除该插件缓存后重试，或将日志发给开发者继续定位。'
                         )
@@ -1743,6 +1806,28 @@ class VolatilityWrapper:
                 logger.warning(f"  数据行 {i+1}: {line[:100]}")
 
         return results
+
+    def _strip_tree_markers(self, parts: List[str]) -> tuple:
+        """去除 vol3 树形输出的层级标记（'*'/'**'/'***' 前缀）
+
+        cmdscan/consoles 等插件的子行带层级标记：
+        - tab 分隔时标记与首列合并：'* 1144'、'** 1032'
+        - 空格分隔时标记单独成字段：['*', '1144', ...]
+        返回 (层级数, 清理后的字段列表)，非树形行返回 (0, 原列表)。
+        """
+        clean = list(parts)
+        level = 0
+        while clean:
+            first = str(clean[0]).strip()
+            if not first.startswith('*'):
+                break
+            level += len(first) - len(first.lstrip('*'))
+            rest = first.lstrip('*').strip()
+            if rest:
+                clean[0] = rest
+                break
+            clean.pop(0)
+        return level, clean
 
     def _is_hex_dump_line(self, line: str) -> bool:
         if not line:
@@ -3302,34 +3387,41 @@ class VolatilityWrapper:
                     'command': str(parts[3]) if len(parts) > 3 else ''
                 }
 
+        # CmdScan/Consoles 是树形输出：子行以 '*'/'**' 前缀标记（Application、
+        # CommandBucket_Command_N 等），实际命令在 '**' 层级，必须去前缀才能解析
         elif 'cmdscan' in plugin_name and 'windows' in plugin_name:
-            if len(parts) >= 6:
-                pid_str = str(parts[0]) if parts[0] else ''
+            level, clean = self._strip_tree_markers(parts)
+            if len(clean) >= 6:
+                pid_str = str(clean[0]) if clean[0] else ''
                 if not pid_str.isdigit():
                     return None
 
                 return {
                     'pid': int(pid_str),
-                    'process': str(parts[1]) if len(parts) > 1 else '',
-                    'console_info': str(parts[2]) if len(parts) > 2 else '',
-                    'property': str(parts[3]) if len(parts) > 3 else '',
-                    'address': str(parts[4]) if len(parts) > 4 else '',
-                    'data': str(parts[5]) if len(parts) > 5 else ''
+                    'process': str(clean[1]) if len(clean) > 1 else '',
+                    'console_info': str(clean[2]) if len(clean) > 2 else '',
+                    'property': str(clean[3]) if len(clean) > 3 else '',
+                    'address': str(clean[4]) if len(clean) > 4 else '',
+                    'data': str(clean[5]) if len(clean) > 5 else '',
+                    'level': level
                 }
 
+        # 树形输出：子行以 '*'/'**'/'***' 前缀标记，处理方式同 cmdscan
         elif 'consoles' in plugin_name and 'windows' in plugin_name:
-            if len(parts) >= 6:
-                pid_str = str(parts[0]) if parts[0] else ''
+            level, clean = self._strip_tree_markers(parts)
+            if len(clean) >= 6:
+                pid_str = str(clean[0]) if clean[0] else ''
                 if not pid_str.isdigit():
                     return None
 
                 return {
                     'pid': int(pid_str),
-                    'process': str(parts[1]) if len(parts) > 1 else '',
-                    'console_info': str(parts[2]) if len(parts) > 2 else '',
-                    'property': str(parts[3]) if len(parts) > 3 else '',
-                    'address': str(parts[4]) if len(parts) > 4 else '',
-                    'data': str(parts[5]) if len(parts) > 5 else ''
+                    'process': str(clean[1]) if len(clean) > 1 else '',
+                    'console_info': str(clean[2]) if len(clean) > 2 else '',
+                    'property': str(clean[3]) if len(clean) > 3 else '',
+                    'address': str(clean[4]) if len(clean) > 4 else '',
+                    'data': str(clean[5]) if len(clean) > 5 else '',
+                    'level': level
                 }
 
         elif 'psxview' in plugin_name:

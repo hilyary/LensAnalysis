@@ -15579,7 +15579,7 @@
                                 `<td class="row-number">${globalStartIndex + index + 1}</td>` +
                                 columns.map(col => {
                                     const value = row[col.key];
-                                    const formatted = col.format ? col.format(value) : (value !== undefined ? String(value) : '-');
+                                    const formatted = col.format ? col.format(value, row) : (value !== undefined ? String(value) : '-');
                                     let classes = col.monospace ? 'monospace' : '';
                                     if (col.wrap) classes += ' wrap-text';
                                     let style = '';
@@ -18775,19 +18775,30 @@
                             { key: 'domain_name', label: '域名' },
                             { key: 'hash_ntlm', label: 'NTLM哈希', monospace: true }
                         ],
+                        // cmdscan/consoles 是树形输出：property 列按 level 缩进，命令行高亮
                         'cmdscan': [
                             { key: 'pid', label: 'PID', monospace: true },
                             { key: 'process', label: '进程' },
                             { key: 'console_info', label: '控制台信息', monospace: true },
-                            { key: 'property', label: '属性' },
+                            { key: 'property', label: '属性', format: (v, row) => {
+                                const level = row && row.level ? row.level : 0;
+                                return `<span style="padding-left:${level * 14}px">${this.escapeHtml(String(v))}</span>`;
+                            }},
                             { key: 'address', label: '地址', monospace: true },
-                            { key: 'data', label: '数据', wrap: true }
+                            { key: 'data', label: '数据', wrap: true, format: (v, row) => {
+                                const isCommand = row && String(row.property || '').includes('CommandBucket_Command_');
+                                const text = this.escapeHtml(String(v !== undefined ? v : '-'));
+                                return isCommand ? `<span style="background:rgba(255,193,7,0.25);padding:1px 4px;border-radius:3px">${text}</span>` : text;
+                            }}
                         ],
                         'consoles': [
                             { key: 'pid', label: 'PID', monospace: true },
                             { key: 'process', label: '进程' },
                             { key: 'console_info', label: '控制台信息', monospace: true },
-                            { key: 'property', label: '属性' },
+                            { key: 'property', label: '属性', format: (v, row) => {
+                                const level = row && row.level ? row.level : 0;
+                                return `<span style="padding-left:${level * 14}px">${this.escapeHtml(String(v))}</span>`;
+                            }},
                             { key: 'address', label: '地址', monospace: true },
                             { key: 'data', label: '数据', wrap: true }
                         ],
