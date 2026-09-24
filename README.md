@@ -2,7 +2,7 @@
 
 专业的内存取证分析工具，基于 Volatility 3 框架开发，为安全研究人员、CTF 爱好者和应急响应人员提供强大的内存镜像分析能力。
 
-![Version](https://img.shields.io/badge/Version-v1.0.9-4f7cff)
+![Version](https://img.shields.io/badge/Version-v1.1.0-4f7cff)
 ![Windows](https://img.shields.io/badge/Windows-10%2F11-blue)
 ![macOS](https://img.shields.io/badge/macOS-12%2B-blue)
 ![Linux](https://img.shields.io/badge/Linux-Supported-blue)

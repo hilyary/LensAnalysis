@@ -10791,7 +10791,7 @@ if __name__ == '__main__':
         try:
             from backend import __version__ as current_version
         except ImportError:
-            current_version = '1.0.9'
+            current_version = '1.1.0'
 
         gitee_owner = 'hilyary'
         gitee_repo = 'LensAnalysis-project'
