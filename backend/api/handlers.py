@@ -21,6 +21,14 @@ from backend.cache_paths import (
     default_volatility_cache_dir,
     resolve_volatility_cache_dir,
 )
+from backend.symbol_sources import (
+    SOURCE_CUSTOM,
+    SOURCE_MICROSOFT,
+    SOURCE_MIRROR_CN,
+    describe_symbol_server,
+    normalize_symbol_server,
+    resolve_symbol_server,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +61,8 @@ class APIHandler:
     def __init__(self):
         self.executor = ThreadPoolExecutor(max_workers=4)
         self.current_image = None
-        self._cached_banner = None  
+        self._cached_banner = None
+        self._last_banner_scan_completed = False
         self._active_analysis_wrappers = {}
         self._active_analysis_lock = threading.Lock()
         self._active_extractions = set()
@@ -115,8 +124,8 @@ class APIHandler:
 
     @staticmethod
     def _normalize_os_type(os_type: str) -> str:
-        os_key = os_type.lower()
-        if os_key in ('macos', 'darwin'):
+        os_key = str(os_type or '').strip().lower()
+        if os_key in ('macos', 'darwin', 'osx'):
             os_key = 'mac'
         return os_key
 
@@ -918,9 +927,39 @@ class APIHandler:
                     config.get('settings', {}).pop('custom_cache_path', None)
                     logger.info("已清除自定义 vol3 缓存目录")
 
+            if 'symbol_download_source' in settings or 'custom_symbol_server' in settings:
+                stored_settings = config.setdefault('settings', {})
+                source = str(
+                    settings.get('symbol_download_source', stored_settings.get('symbol_download_source')) or ''
+                ).strip() or SOURCE_MICROSOFT
+
+                if 'custom_symbol_server' in settings:
+                    raw_url = str(settings.get('custom_symbol_server') or '')
+                else:
+                    raw_url = str(stored_settings.get('custom_symbol_server') or '')
+
+                try:
+                    custom_url = normalize_symbol_server(raw_url) if raw_url.strip() else ''
+                    if source == SOURCE_CUSTOM and not custom_url:
+                        raise ValueError('选择自定义下载源时需要填写地址')
+                    if source not in (SOURCE_MICROSOFT, SOURCE_MIRROR_CN, SOURCE_CUSTOM):
+                        raise ValueError(f'未知的下载源: {source}')
+                except ValueError as exc:
+                    return {
+                        'status': 'error',
+                        'message': f'符号表下载源无效: {exc}'
+                    }
+
+                stored_settings['symbol_download_source'] = source
+                if custom_url:
+                    stored_settings['custom_symbol_server'] = custom_url
+                else:
+                    stored_settings.pop('custom_symbol_server', None)
+                logger.info(f"已设置符号表下载源: {source}")
+
             _excluded_keys = {'custom_vol_path', 'custom_python_path', 'custom_symbols_path',
                               'custom_symbols_path_windows', 'custom_symbols_path_linux', 'custom_symbols_path_mac',
-                              'custom_cache_path'}
+                              'custom_cache_path', 'symbol_download_source', 'custom_symbol_server'}
             other_settings = {k: v for k, v in settings.items()
                               if k not in _excluded_keys}
             if other_settings:
@@ -5227,6 +5266,8 @@ class APIHandler:
             os_type = None
             banner = None
             from_cache = False
+            cache_dirty = False
+            self._last_banner_scan_completed = False
 
             if project_info_file.exists():
                 try:
@@ -5243,27 +5284,44 @@ class APIHandler:
                         from_cache = True
                         logger.info(f"从缓存加载镜像信息: {cached_info.get('name')}, os_type={os_type}, banner={'有' if banner else '无'}")
 
+                        user_os = self._normalize_os_type(user_specified_os)
+                        if user_os and user_os != self._normalize_os_type(os_type):
+                            logger.info(
+                                f"用户指定 {user_specified_os}，缓存记录为 {os_type}，"
+                                f"改用用户指定的 {user_os} 并更正缓存"
+                            )
+                            os_type = user_os
+                            banner = ''
+                            cached_info.pop('banner_scanned', None)
+                            cache_dirty = True
+
                         if not banner and os_type and ('linux' in os_type.lower() or 'mac' in os_type.lower()):
-                            logger.info(f"缓存中没有 banner，且OS类型为 {os_type}，需要重新获取...")
-                            banner = self._get_image_banner(file_path, os_type)
-                            if banner:
-                                cached_info['banner'] = banner
-                                try:
-                                    with open(project_info_file, 'w', encoding='utf-8') as f:
-                                        json.dump(cached_info, f, indent=2, ensure_ascii=False)
-                                    logger.info("已更新缓存中的 banner")
-                                except Exception as e:
-                                    logger.warning(f"更新缓存 banner 失败: {e}")
+                            if cached_info.get('banner_scanned'):
+                                logger.info(f"缓存记录该镜像没有 banner，跳过重复扫描")
+                            else:
+                                logger.info(f"缓存中没有 banner，且OS类型为 {os_type}，需要重新获取...")
+                                banner = self._get_image_banner(file_path, os_type)
+                                cache_dirty = True
+                                if not banner and self._last_banner_scan_completed:
+                                    cached_info['banner_scanned'] = True
 
                         if banner:
                             self._cached_banner = banner
+
+                        if cache_dirty:
+                            cached_info['os_type'] = os_type
+                            cached_info['banner'] = banner or ''
+                            try:
+                                with open(project_info_file, 'w', encoding='utf-8') as f:
+                                    json.dump(cached_info, f, indent=2, ensure_ascii=False)
+                                logger.info("已更新缓存中的镜像信息")
+                            except Exception as e:
+                                logger.warning(f"更新缓存失败: {e}")
                 except Exception as e:
                     logger.warning(f"读取缓存失败: {e}")
 
             if from_cache:
                 logger.info(f"缓存命中，跳过检测和 banner 执行")
-                if user_specified_os and user_specified_os.lower() != os_type.lower():
-                    logger.info(f"用户指定 {user_specified_os}，但缓存记录为 {os_type}，使用缓存的OS类型")
 
                 needs_symbol = False
                 symbol_info = None
@@ -5493,6 +5551,12 @@ class APIHandler:
                 'size': self._format_size(file_size),
                 'os_type': os_type,
                 'banner': banner,
+                'banner_scanned': bool(
+                    not banner
+                    and os_type
+                    and ('linux' in os_type.lower() or 'mac' in os_type.lower())
+                    and self._last_banner_scan_completed
+                ),
                 'pdb_info': current_windows_pdb or None,
                 'loaded_at': self.current_image['loaded_at'],
                 'last_accessed': datetime.now().isoformat()
@@ -5578,6 +5642,7 @@ class APIHandler:
 
     def _get_image_banner(self, file_path: str, os_type: str) -> str:
         logger.info(f"_get_image_banner 被调用: file_path={file_path}, os_type={os_type}")
+        self._last_banner_scan_completed = False
 
         if self._cached_banner:
             is_valid = (
@@ -5593,14 +5658,15 @@ class APIHandler:
                 logger.warning(f"缓存的 banner 无效，重新获取: {self._cached_banner}")
                 self._cached_banner = None  
 
-        banner = self._get_banner_streaming(file_path)
+        banner, completed = self._get_banner_streaming(file_path)
+        self._last_banner_scan_completed = completed
         if banner:
             self._cached_banner = banner
             return banner
 
         return ''
 
-    def _get_banner_streaming(self, file_path: str) -> str:
+    def _get_banner_streaming(self, file_path: str) -> tuple:
         import subprocess
         import os
         import platform
@@ -5610,7 +5676,7 @@ class APIHandler:
             vol_path = self._get_vol_path()
             if not vol_path:
                 logger.warning("找不到 vol 命令")
-                return ''
+                return '', False
 
             logger.info(f"使用流式读取获取 banner: {file_path}")
 
@@ -5653,18 +5719,18 @@ class APIHandler:
                                 process.wait(timeout=5)
                             except subprocess.TimeoutExpired:
                                 process.kill()
-                            return banner
+                            return banner, True
 
             process.wait(timeout=10)
 
             if not banner:
                 logger.warning("流式读取未获取到 banner")
 
-            return banner or ''
+            return banner or '', True
 
         except Exception as e:
             logger.warning(f"流式获取 banner 失败: {str(e)}", exc_info=True)
-            return ''
+            return '', False
 
     def _extract_kernel_version(self, banner: str, os_type: str) -> str:
         import re
@@ -8955,11 +9021,39 @@ except Exception as e:
             logger.error(f"导出缓存插件结果失败: {e}")
             return {'status': 'error', 'message': f'导出缓存插件结果失败: {str(e)}'}
 
-    def download_windows_symbols(self) -> Dict[str, Any]:
+    def get_symbol_download_source(self) -> Dict[str, Any]:
+        try:
+            settings = self._load_config().get('settings', {})
+            source = str(settings.get('symbol_download_source') or SOURCE_MICROSOFT).strip()
+            if source not in (SOURCE_MICROSOFT, SOURCE_MIRROR_CN, SOURCE_CUSTOM):
+                source = SOURCE_MICROSOFT
+
+            return {
+                'status': 'success',
+                'source': source,
+                'custom_url': str(settings.get('custom_symbol_server') or '')
+            }
+        except Exception as e:
+            logger.error(f"读取符号表下载源失败: {e}")
+            return {
+                'status': 'error',
+                'message': f'读取符号表下载源失败: {str(e)}'
+            }
+
+    def download_windows_symbols(self, source: str = None, custom_url: str = None) -> Dict[str, Any]:
         import os
         import subprocess
         import sys
         import platform
+
+        try:
+            symbol_server = resolve_symbol_server(source, custom_url)
+        except ValueError as e:
+            return {
+                'status': 'error',
+                'message': f'符号表下载源无效: {str(e)}'
+            }
+
         try:
             if not self.current_image:
                 return {
@@ -8976,8 +9070,12 @@ except Exception as e:
 
             logger.info("开始下载Windows符号表...")
 
-            logger.info("使用自定义脚本从微软官方下载符号表...")
-            self._show_loading('正在下载Windows符号表...', '正在从微软官方符号服务器下载...\n\n这可能需要几分钟，请耐心等待。')
+            symbol_host = describe_symbol_server(symbol_server)
+            logger.info(f"使用自定义脚本下载符号表，下载源: {symbol_server}")
+            self._show_loading(
+                '正在下载Windows符号表...',
+                f'正在从 {symbol_host} 下载...\n\n这可能需要几分钟，请耐心等待。'
+            )
 
             import tempfile
 
@@ -9096,7 +9194,9 @@ def download_symbols(image_path, symbols_dir):
 
         try:
             # 下载 PDB 文件（支持代理和进度显示）
-            pdb_url = f"https://msdl.microsoft.com/download/symbols/{pdb_name}/{guid}{age:01X}/{pdb_name}"
+            symbol_server = os.environ.get('LENS_SYMBOL_SERVER') or 'https://msdl.microsoft.com/download/symbols'
+            symbol_server = symbol_server.rstrip('/')
+            pdb_url = f"{symbol_server}/{pdb_name}/{guid}{age:01X}/{pdb_name}"
             print(f"Downloading PDB file...")
             print(f"  URL: {pdb_url}")
 
@@ -9266,6 +9366,7 @@ if __name__ == '__main__':
 
                 env['LENS_IMAGE_PATH'] = str(self.current_image['path'])
                 env['LENS_SYMBOLS_DIR'] = str(self._get_symbols_base_dir('windows'))
+                env['LENS_SYMBOL_SERVER'] = symbol_server
 
                 proxy_url = self._build_proxy_url()
                 if proxy_url:

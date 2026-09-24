@@ -6608,6 +6608,45 @@
             </div>
         </div>
 
+        <div class="confirm-overlay hidden" id="symbolSourceOverlay">
+            <div class="confirm-card symbol-source-dialog">
+                <div class="symbol-source-dialog-head">
+                    <span class="symbol-source-dialog-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="url(#gradient3)" stroke-width="2" width="22" height="22">
+                            <defs>
+                                <linearGradient id="gradient3" x1="0%" y1="0%" x2="100%" y2="100%">
+                                    <stop offset="0%" style="stop-color:#667eea;stop-opacity:1" />
+                                    <stop offset="100%" style="stop-color:#764ba2;stop-opacity:1" />
+                                </linearGradient>
+                            </defs>
+                            <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                            <path d="M3 5v14a9 3 0 0 0 18 0V5"/>
+                            <path d="M3 12a9 3 0 0 0 18 0"/>
+                        </svg>
+                    </span>
+                    <div>
+                        <h3 class="confirm-title">自定义下载源</h3>
+                        <p class="symbol-source-dialog-sub">仅影响应用自身的符号表下载，使用 vol 命令下载不受影响</p>
+                    </div>
+                </div>
+
+                <label class="symbol-source-field-label" for="customSymbolServerInput">符号服务器地址</label>
+                <input type="text" id="customSymbolServerInput" class="symbol-source-input"
+                       placeholder="http://msdl.example.com:88/download/symbols" spellcheck="false" autocomplete="off">
+
+                <div class="symbol-source-field-hint">
+                    需兼容微软符号服务器的目录结构：<code>{地址}/{pdb名称}/{GUID}{Age}/{pdb名称}</code>
+                </div>
+
+                <div class="symbol-source-error" id="customSymbolServerError"></div>
+
+                <div class="confirm-buttons">
+                    <button class="confirm-btn cancel-btn" id="symbolSourceCancelBtn">取消</button>
+                    <button class="confirm-btn confirm-primary-btn" id="symbolSourceConfirmBtn">保存并使用</button>
+                </div>
+            </div>
+        </div>
+
         <div class="confirm-overlay hidden" id="termsOverlay">
             <div class="terms-dialog">
                 <div class="terms-titlebar">
@@ -7590,7 +7629,29 @@
                     this.executionStartTime = null;
                     this.isWebView = false;
                     this.api = null;
-                    this.runningPlugins = new Set();  
+                    this._symbolDownloadSource = 'microsoft';
+                    this._customSymbolServer = '';
+                    this._SYMBOL_SOURCES = {
+                        microsoft: {
+                            optionLabel: '微软官方',
+                            downloadLabel: '从微软官方下载',
+                            url: 'https://msdl.microsoft.com/download/symbols',
+                            notice: ''
+                        },
+                        mirror_cn: {
+                            optionLabel: '国内加速',
+                            downloadLabel: '从国内加速下载',
+                            url: 'http://msdl.blackint3.com:88/download/symbols',
+                            notice: 'http 明文传输，非官方源'
+                        },
+                        custom: {
+                            optionLabel: '自定义…',
+                            downloadLabel: '从自定义源下载',
+                            url: '',
+                            notice: '自定义源，请确认来源可信'
+                        }
+                    };
+                    this.runningPlugins = new Set();
                     this.maxConcurrentPlugins = 3;  
                     this.pluginTasks = new Map();
                     this.pluginTaskSeq = 0;
@@ -8547,6 +8608,25 @@
                     }
                     if (proxyTestBtn) {
                         proxyTestBtn.addEventListener('click', () => this.testProxy());
+                    }
+
+                    const customSymbolServerInput = document.getElementById('customSymbolServerInput');
+                    const symbolSourceCancelBtn = document.getElementById('symbolSourceCancelBtn');
+                    const symbolSourceConfirmBtn = document.getElementById('symbolSourceConfirmBtn');
+                    if (symbolSourceCancelBtn) {
+                        symbolSourceCancelBtn.addEventListener('click', () => this.cancelCustomSymbolServer());
+                    }
+                    if (symbolSourceConfirmBtn) {
+                        symbolSourceConfirmBtn.addEventListener('click', () => this.confirmCustomSymbolServer());
+                    }
+                    if (customSymbolServerInput) {
+                        customSymbolServerInput.addEventListener('keydown', (event) => {
+                            if (event.key === 'Enter') {
+                                this.confirmCustomSymbolServer();
+                            } else if (event.key === 'Escape') {
+                                this.cancelCustomSymbolServer();
+                            }
+                        });
                     }
 
                     const buildLinuxSymbolBtn = document.getElementById('buildLinuxSymbolBtn');
@@ -10460,6 +10540,7 @@
                     if (overlay) {
                         overlay.classList.remove('hidden');
                         this.showSymbolStatusLoading();
+                        await this.loadSymbolDownloadSource();
                         await this.loadSymbolStatus();
 
                         const buildSection = document.getElementById('buildSymbolSection');
@@ -10895,6 +10976,9 @@
                                 this._originalCachePath = settings.custom_cache_path || '';
                                 this.validateCachePath(settings.custom_cache_path || '');
                             }
+
+                            this._symbolDownloadSource = settings.symbol_download_source || 'microsoft';
+                            this._customSymbolServer = settings.custom_symbol_server || '';
 
                             this.renderQuickScanConfig(settings.quick_scan);
 
@@ -14693,6 +14777,133 @@
                     }
                 }
 
+                _currentSymbolSource() {
+                    const key = this._SYMBOL_SOURCES[this._symbolDownloadSource]
+                        ? this._symbolDownloadSource
+                        : 'microsoft';
+                    const item = this._SYMBOL_SOURCES[key];
+                    const isCustom = key === 'custom';
+
+                    return {
+                        key: key,
+                        downloadLabel: item.downloadLabel,
+                        notice: item.notice,
+                        url: isCustom
+                            ? (this._customSymbolServer || '（尚未填写地址）')
+                            : item.url
+                    };
+                }
+
+                async onSymbolSourceChange(value) {
+                    if (value === 'custom') {
+                        this.updateDownloadButtons();
+                        this.openCustomSymbolServerDialog();
+                        return;
+                    }
+
+                    await this.applySymbolDownloadSource(value);
+                }
+
+                async applySymbolDownloadSource(value, customUrl = null) {
+                    const previousSource = this._symbolDownloadSource;
+                    const previousUrl = this._customSymbolServer;
+
+                    if (value === 'custom') {
+                        this._customSymbolServer = customUrl;
+                    }
+                    this._symbolDownloadSource = value;
+                    this.updateDownloadButtons();
+
+                    if (!this.isWebView || !this.api) return true;
+
+                    try {
+                        const payload = { symbol_download_source: value };
+                        if (value === 'custom') {
+                            payload.custom_symbol_server = this._customSymbolServer;
+                        }
+
+                        const result = await this.api.save_settings(payload);
+                        if (!result || result.status !== 'success') {
+                            throw new Error((result && result.message) || '保存失败');
+                        }
+                        this.toast('success', '已切换下载源', this._currentSymbolSource().url);
+                        return true;
+                    } catch (e) {
+                        this._symbolDownloadSource = previousSource;
+                        this._customSymbolServer = previousUrl;
+                        this.updateDownloadButtons();
+                        this.toast('error', '保存失败', e.message || '未知错误');
+                        return false;
+                    }
+                }
+
+                async loadSymbolDownloadSource() {
+                    if (!this.isWebView || !this.api || !this.api.get_symbol_download_source) return;
+
+                    try {
+                        const result = await this.api.get_symbol_download_source();
+                        if (result && result.status === 'success') {
+                            this._symbolDownloadSource = result.source || 'microsoft';
+                            this._customSymbolServer = result.custom_url || '';
+                        }
+                    } catch (e) {
+                        console.warn('读取符号表下载源失败:', e);
+                    }
+                }
+
+                openCustomSymbolServerDialog() {
+                    const overlay = document.getElementById('symbolSourceOverlay');
+                    if (!overlay) return;
+
+                    const input = document.getElementById('customSymbolServerInput');
+                    if (input) {
+                        input.value = this._customSymbolServer || '';
+                    }
+                    this.showCustomSymbolServerError('');
+
+                    overlay.classList.remove('hidden');
+                    if (input) {
+                        setTimeout(() => {
+                            input.focus();
+                            input.select();
+                        }, 60);
+                    }
+                }
+
+                closeCustomSymbolServerDialog() {
+                    const overlay = document.getElementById('symbolSourceOverlay');
+                    if (overlay) {
+                        overlay.classList.add('hidden');
+                    }
+                    this.showCustomSymbolServerError('');
+                }
+
+                showCustomSymbolServerError(message) {
+                    const errorBox = document.getElementById('customSymbolServerError');
+                    if (!errorBox) return;
+
+                    errorBox.textContent = message || '';
+                    errorBox.classList.toggle('show', !!message);
+                }
+
+                cancelCustomSymbolServer() {
+                    this.closeCustomSymbolServerDialog();
+                }
+
+                async confirmCustomSymbolServer() {
+                    const input = document.getElementById('customSymbolServerInput');
+                    const url = String(input ? input.value : '').trim().replace(/\/+$/, '');
+
+                    if (!/^https?:\/\/[^\s/]+/.test(url)) {
+                        this.showCustomSymbolServerError('地址需要以 http:// 或 https:// 开头');
+                        if (input) input.focus();
+                        return;
+                    }
+
+                    this.closeCustomSymbolServerDialog();
+                    await this.applySymbolDownloadSource('custom', url);
+                }
+
                 updateDownloadButtons(symbolStatus = null) {
                     const buttonsContainer = document.getElementById('githubDownloadButtons');
                     if (!buttonsContainer) return;
@@ -14767,19 +14978,41 @@
                             </button>
                         `;
                     } else if (osType === 'windows') {
+                        const sourceInfo = this._currentSymbolSource();
+                        const sourceOptions = Object.keys(this._SYMBOL_SOURCES).map(key => {
+                            const item = this._SYMBOL_SOURCES[key];
+                            const selected = key === sourceInfo.key ? ' selected' : '';
+                            return `<option value="${key}"${selected}>${item.optionLabel}</option>`;
+                        }).join('');
+
                         html = `
-                            <button class="confirm-btn confirm-primary-btn" onclick="window.forensicsApp.downloadWindowsSymbols()" style="margin-right: 8px;">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="vertical-align: middle; margin-right: 4px;">
-                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
-                                </svg>
-                                从微软官方下载
-                            </button>
-                            <button class="confirm-btn confirm-secondary-btn" onclick="window.forensicsApp.downloadWindowsSymbolsViaVol()">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="vertical-align: middle; margin-right: 4px;">
-                                    <path d="M8 9l3 3-3 3M13 9l3 3-3 3"/>
-                                </svg>
-                                使用 vol 命令下载
-                            </button>
+                            <div class="symbol-download-row">
+                                <button class="confirm-btn confirm-primary-btn" onclick="window.forensicsApp.downloadWindowsSymbols()">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="vertical-align: middle; margin-right: 4px;">
+                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+                                    </svg>
+                                    ${sourceInfo.downloadLabel}
+                                </button>
+                                <button class="confirm-btn confirm-secondary-btn" onclick="window.forensicsApp.downloadWindowsSymbolsViaVol()" title="由 Volatility 3 自行下载，下载地址固定为微软官方，不受下载源设置影响">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="vertical-align: middle; margin-right: 4px;">
+                                        <path d="M8 9l3 3-3 3M13 9l3 3-3 3"/>
+                                    </svg>
+                                    使用 vol 命令下载
+                                </button>
+                                <span class="symbol-source-picker">
+                                    <select id="symbolSourceSelect" class="symbol-source-select"
+                                            onchange="window.forensicsApp.onSymbolSourceChange(this.value)"
+                                            title="应用自身下载符号表时使用的服务器">
+                                        ${sourceOptions}
+                                    </select>
+                                    <svg class="symbol-source-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <polyline points="6 9 12 15 18 9"/>
+                                    </svg>
+                                </span>
+                            </div>
+                            <div style="margin-top: 8px; font-size: 12px; color: var(--text-secondary); line-height: 1.6;">
+                                下载源：${this.escapeHtml(sourceInfo.url)}${sourceInfo.notice ? `<span style="color: #e6a23c;">（${sourceInfo.notice}）</span>` : ''}
+                            </div>
                         `;
                     } else {
                         html = `
@@ -15097,9 +15330,13 @@
                     }
 
                     try {
-                        this.toast('info', '开始下载', '正在从微软官方符号服务器下载Windows符号表...\n\n可能需要几分钟，请耐心等待。');
+                        const sourceInfo = this._currentSymbolSource();
+                        this.toast('info', '开始下载', `正在从 ${sourceInfo.url} 下载Windows符号表...\n\n可能需要几分钟，请耐心等待。`);
 
-                        const result = await window.pywebview.api.download_windows_symbols();
+                        const result = await window.pywebview.api.download_windows_symbols(
+                            this._symbolDownloadSource,
+                            this._customSymbolServer
+                        );
 
                         if (result.status === 'success') {
                             if (result.already_exists) {
@@ -15119,7 +15356,10 @@
                             const hintDiv = document.getElementById('symbolHint');
                             if (hintDiv) hintDiv.remove();
                         } else {
-                            this.toast('error', '下载失败', result.message || '未知错误');
+                            const fallbackHint = this._symbolDownloadSource === 'microsoft'
+                                ? '\n\n可尝试把下载源切换为「国内加速」后重试。'
+                                : '\n\n可尝试改用「使用 vol 命令下载」。';
+                            this.toast('error', '下载失败', (result.message || '未知错误') + fallbackHint);
                         }
                     } catch (e) {
                         console.error('下载Windows符号表失败:', e);
@@ -15155,7 +15395,8 @@
                             await new Promise(resolve => setTimeout(resolve, 500));
                             await this.loadSymbolStatus();
                         } else {
-                            this.toast('error', '下载失败', result.message || '未知错误');
+                            this.toast('error', '下载失败', (result.message || '未知错误') +
+                                '\n\n提示：vol 命令固定从微软官方下载，不受下载源设置影响；若网络访问不了微软服务器，可改用下载按钮并选择「国内加速」。');
                         }
                     } catch (e) {
                         console.error('vol 命令下载符号表失败:', e);

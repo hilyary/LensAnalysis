@@ -3,6 +3,7 @@
     
     --primary: #3b82f6;
     --primary-hover: #2563eb;
+    --primary-dark: #2563eb;
     --primary-light: #eff6ff;
     --primary-subtle: rgba(59, 130, 246, 0.08);
 
@@ -70,6 +71,7 @@
 [data-theme="dark"] {
     --primary: #60a5fa;
     --primary-hover: #93bbfd;
+    --primary-dark: #3b82f6;
     --primary-light: rgba(59, 130, 246, 0.15);
     --primary-subtle: rgba(59, 130, 246, 0.1);
 
@@ -163,6 +165,34 @@
 }
 [data-theme="dark"] #githubDownloadSection div[style*="font-weight: 600"] {
     color: var(--text-primary) !important;
+}
+[data-theme="dark"] #githubDownloadSection .confirm-primary-btn {
+    background: var(--primary) !important;
+    border-color: var(--primary) !important;
+    color: #1e293b !important;
+}
+[data-theme="dark"] #githubDownloadSection .confirm-primary-btn svg,
+[data-theme="dark"] #githubDownloadSection .confirm-primary-btn svg * {
+    color: #1e293b !important;
+}
+[data-theme="dark"] #githubDownloadSection .confirm-primary-btn:hover {
+    background: var(--primary-hover) !important;
+    border-color: var(--primary-hover) !important;
+}
+[data-theme="dark"] #githubDownloadSection .symbol-source-select {
+    background: var(--bg-primary) !important;
+    color: var(--text-primary) !important;
+}
+[data-theme="dark"] #githubDownloadSection .symbol-source-select:hover {
+    background: var(--bg-hover) !important;
+    border-color: var(--primary) !important;
+}
+[data-theme="dark"] #githubDownloadSection .symbol-source-caret {
+    color: var(--text-muted) !important;
+}
+[data-theme="dark"] #githubDownloadSection .symbol-source-picker:hover .symbol-source-caret,
+[data-theme="dark"] #githubDownloadSection .symbol-source-picker:focus-within .symbol-source-caret {
+    color: var(--primary) !important;
 }
 [data-theme="dark"] #proxySettingsBtn,
 [data-theme="dark"] #downloadDwarf2jsonBtn {
@@ -2472,6 +2502,179 @@ body {
     background: var(--primary-dark);
     border-color: var(--primary-dark);
     box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+}
+
+.symbol-download-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.symbol-download-row .confirm-btn {
+    display: inline-flex;
+    align-items: center;
+    padding: 8px 14px;
+    min-width: 0;
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+.symbol-download-row .confirm-btn svg {
+    flex-shrink: 0;
+}
+
+.symbol-source-picker {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.symbol-source-select {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    padding: 8px 30px 8px 12px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.4;
+    cursor: pointer;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
+}
+
+.symbol-source-select:hover {
+    border-color: var(--primary);
+    background: var(--bg-hover);
+}
+
+.symbol-source-select:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+}
+
+.symbol-source-select option {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.symbol-source-caret {
+    position: absolute;
+    right: 10px;
+    width: 14px;
+    height: 14px;
+    color: var(--text-muted);
+    pointer-events: none;
+    transition: color var(--transition-fast);
+}
+
+.symbol-source-picker:hover .symbol-source-caret,
+.symbol-source-picker:focus-within .symbol-source-caret {
+    color: var(--primary);
+}
+
+.symbol-source-dialog {
+    max-width: 460px;
+}
+
+.symbol-source-dialog-head {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 22px;
+}
+
+.symbol-source-dialog-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
+    border-radius: 12px;
+    background: linear-gradient(135deg, rgba(102, 126, 234, 0.14) 0%, rgba(118, 75, 162, 0.16) 100%);
+}
+
+.symbol-source-dialog-head .confirm-title {
+    margin: 0 0 4px 0;
+    font-size: 17px;
+    text-align: left;
+}
+
+.symbol-source-dialog-sub {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-muted) !important;
+}
+
+.symbol-source-field-label {
+    display: block;
+    margin-bottom: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary) !important;
+}
+
+.symbol-source-input {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 13px;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.symbol-source-input::placeholder {
+    color: var(--text-muted);
+}
+
+.symbol-source-input:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+}
+
+.symbol-source-field-hint {
+    margin-top: 10px;
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--text-muted) !important;
+}
+
+.symbol-source-field-hint code {
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    font-size: 11px;
+}
+
+.symbol-source-error {
+    display: none;
+    margin-top: 12px;
+    padding: 8px 12px;
+    background: rgba(245, 108, 108, 0.1);
+    border: 1px solid rgba(245, 108, 108, 0.3);
+    border-radius: 6px;
+    font-size: 12px;
+    color: #f56c6c !important;
+}
+
+.symbol-source-error.show {
+    display: block;
+}
+
+.symbol-source-dialog .confirm-buttons {
+    margin-top: 24px;
+    justify-content: flex-end;
 }
 
 .toolbar-btn.primary-btn {
