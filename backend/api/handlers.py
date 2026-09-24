@@ -17,7 +17,10 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from backend.cache_paths import resolve_volatility_cache_dir
+from backend.cache_paths import (
+    default_volatility_cache_dir,
+    resolve_volatility_cache_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -746,6 +749,7 @@ class APIHandler:
                 'status': 'success',
                 'data': settings,
                 'current_python_path': self._get_python_cmd(),
+                'default_cache_path': str(default_volatility_cache_dir()),
                 'warnings': {
                     'vol_path_chinese': vol_path_warning
                 } if vol_path_warning else None
@@ -4079,6 +4083,22 @@ class APIHandler:
                 'message': f'定位路径失败: {str(e)}'
             }
 
+    def open_cache_directory(self, path: str = None) -> Dict[str, Any]:
+        try:
+            typed = str(path or '').strip()
+            if typed:
+                cache_dir = resolve_volatility_cache_dir(typed, create=True)
+            else:
+                cache_dir = self._cache_path or default_volatility_cache_dir()
+                cache_dir.mkdir(parents=True, exist_ok=True)
+            return self._open_directory(str(cache_dir))
+        except Exception as e:
+            logger.error(f"打开缓存目录失败: {str(e)}")
+            return {
+                'status': 'error',
+                'message': f'打开缓存目录失败: {str(e)}'
+            }
+
     def open_symbol_directory(self, os_type: str) -> Dict[str, Any]:
         try:
             symbols_dir = self._get_os_symbols_display_dir(os_type)
@@ -5004,7 +5024,11 @@ class APIHandler:
 
     def _detect_os_type(self, file_path: str) -> str:
         from backend.volatility_wrapper import VolatilityWrapper
-        wrapper = VolatilityWrapper(file_path)
+        wrapper = VolatilityWrapper(
+            file_path,
+            symbols_dir=str(self._get_symbols_base_dir(None)),
+            cache_path=self._cache_path,
+        )
         logger.info(f"开始检测镜像文件: {file_path}")
 
         self._cached_banner = None

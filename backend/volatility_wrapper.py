@@ -18,6 +18,27 @@ from backend.cache_paths import resolve_volatility_cache_dir
 
 logger = logging.getLogger(__name__)
 
+VOL_LAUNCHER_CODE = (
+    "import sys; sys.argv[0]='vol.py'; "
+    "from volatility3.cli import main; sys.exit(main())"
+)
+
+
+def is_packaged_runtime() -> bool:
+    if getattr(sys, 'frozen', False):
+        return True
+    if '__compiled__' in globals():
+        return True
+    return '.app' in (getattr(sys, 'executable', '') or '')
+
+
+def resolve_fallback_python() -> Optional[str]:
+    if not is_packaged_runtime():
+        return sys.executable
+    if platform.system() == 'Windows':
+        return shutil.which('python') or shutil.which('python3')
+    return shutil.which('python3') or shutil.which('python')
+
 
 def _get_clean_python_env():
     env = os.environ.copy()
@@ -892,14 +913,12 @@ class VolatilityWrapper:
                 return str(candidate)
         return None
 
-    def _get_execution_python(self, is_frozen: bool = False) -> str:
+    def _get_execution_python(self) -> Optional[str]:
         if self._python_path:
             return self._python_path
-        if is_frozen:
-            return shutil.which('python') or shutil.which('python3') or 'python'
-        return sys.executable
+        return resolve_fallback_python()
 
-    def _find_vol_command(self) -> str:
+    def _find_vol_command(self) -> Optional[str]:
         config = self._load_config()
         settings = config.get('settings', {})
 
@@ -912,7 +931,7 @@ class VolatilityWrapper:
             logger.warning(f"自定义 vol 路径无效或不可执行: {custom_vol_path}")
 
         if settings.get('custom_python_path') and self._python_path:
-            logger.info("自定义 Python 未找到匹配 vol，使用该 Python 的模块方式")
+            logger.info("自定义 Python 未找到匹配 vol，改用该 Python 直接调用 vol3")
             return None
 
         is_nuitka = hasattr(sys, 'nuitka_version') or (
@@ -934,14 +953,9 @@ class VolatilityWrapper:
                     logger.info(f"打包环境: 找到系统 vol 命令: {vol_path}")
                     return vol_path
 
-            try:
-                import volatility3
-                logger.info("打包环境: Volatility 3 已打包进可执行文件，将使用 python -m volatility3")
-                return None  
-            except ImportError:
-                logger.warning("打包环境: Volatility 3 未打包，且未找到系统 vol 命令")
-                logger.warning("请安装 Volatility 3: pip install volatility3==2.27.0")
-                return 'vol'  
+            logger.warning("打包环境: 未找到系统 vol 命令")
+            logger.warning("请安装 Volatility 3: pip install volatility3==2.27.0")
+            return None
 
         if not is_windows:
             vol_path = shutil.which('vol')
@@ -965,8 +979,8 @@ class VolatilityWrapper:
                     logger.info(f"找到 vol 命令: {path}")
                     return str(path)
 
-        logger.warning("未找到 vol 命令的具体路径，将依赖系统 PATH")
-        return 'vol'
+        logger.warning("未找到 vol 命令的具体路径，将由解释器直接调用 vol3")
+        return None
 
     @staticmethod
     def _get_symbols_dir() -> Path:
@@ -1174,11 +1188,6 @@ class VolatilityWrapper:
 
             env['PYTHONIOENCODING'] = 'utf-8'
 
-            is_nuitka = hasattr(sys, 'nuitka_version') or (
-                hasattr(sys, 'argv') and len(sys.argv) > 0 and sys.argv[0].endswith('.exe')
-            )
-            is_frozen = getattr(sys, 'frozen', False) or is_nuitka
-
             needs_custom_plugins = (
                 'pypykatz_plugin.PypykatzPlugin' in plugin_name or
                 'pypykatz' in plugin_name
@@ -1191,12 +1200,19 @@ class VolatilityWrapper:
                 ]
                 logger.info(f"使用 vol 命令: {vol_path}")
             else:
-                python_exe = self._get_execution_python(is_frozen)
+                python_exe = self._get_execution_python()
+                if not python_exe:
+                    return self._execution_failure_result(
+                        plugin_name,
+                        '未找到 Volatility 3：系统里既没有 vol 命令，也没有可用的 '
+                        'Python 解释器。请安装 Volatility 3 '
+                        '(pip install volatility3==2.27.0)，或在设置中指定 vol 路径。',
+                    )
                 cmd = [
-                    python_exe, '-m', 'volatility3',
+                    python_exe, '-c', VOL_LAUNCHER_CODE,
                     '-f', self.image_path,
                 ]
-                logger.info(f"使用 python -m volatility3")
+                logger.info(f"使用解释器直接调用 vol3: {python_exe}")
 
             if self._cache_path:
                 cmd.extend(['--cache-path', str(self._cache_path)])
@@ -1518,11 +1534,6 @@ class VolatilityWrapper:
 
             vol_path = self._vol_path
 
-            is_nuitka = hasattr(sys, 'nuitka_version') or (
-                hasattr(sys, 'argv') and len(sys.argv) > 0 and sys.argv[0].endswith('.exe')
-            )
-            is_frozen = getattr(sys, 'frozen', False) or is_nuitka
-
             if vol_path:
                 cmd = [
                     vol_path,
@@ -1531,13 +1542,26 @@ class VolatilityWrapper:
                 if not quiet:
                     logger.info(f"使用 vol 命令: {vol_path}")
             else:
-                python_exe = self._get_execution_python(is_frozen)
+                python_exe = self._get_execution_python()
+                if not python_exe:
+                    return {
+                        'status': 'error',
+                        'returncode': None,
+                        'stdout': '',
+                        'stderr': '',
+                        'command': cmd,
+                        'error': (
+                            '未找到 Volatility 3：系统里既没有 vol 命令，也没有可用的 '
+                            'Python 解释器。请安装 Volatility 3 '
+                            '(pip install volatility3==2.27.0)，或在设置中指定 vol 路径。'
+                        ),
+                    }
                 cmd = [
-                    python_exe, '-m', 'volatility3',
+                    python_exe, '-c', VOL_LAUNCHER_CODE,
                     '-f', self.image_path,
                 ]
                 if not quiet:
-                    logger.info("使用 python -m volatility3")
+                    logger.info(f"使用解释器直接调用 vol3: {python_exe}")
 
             if use_symbols:
                 cmd.extend(['-s', str(self._symbols_dir)])

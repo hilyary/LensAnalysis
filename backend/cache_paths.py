@@ -1,5 +1,15 @@
+import os
+import sys
 from pathlib import Path
 from typing import Optional, Union
+
+
+def default_volatility_cache_dir() -> Path:
+    if sys.platform == 'win32':
+        base = os.environ.get('APPDATA') or str(Path.home())
+        return Path(os.path.realpath(os.path.join(base, 'volatility3')))
+    base = os.environ.get('XDG_CACHE_HOME') or str(Path.home() / '.cache')
+    return Path(os.path.join(base, 'volatility3'))
 
 
 def resolve_volatility_cache_dir(

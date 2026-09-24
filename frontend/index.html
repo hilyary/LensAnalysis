@@ -6859,7 +6859,7 @@
                                 <button class="settings-browse-btn" id="resetCacheBtn" title="恢复默认目录" style="background: var(--bg-tertiary); color: var(--text-primary);">恢复默认</button>
                             </div>
                             <div style="margin-top: 6px; font-size: 12px; color: var(--text-secondary); line-height: 1.8;">
-                                指向已有的 vol3 缓存目录（包含 <code style="background: var(--bg-tertiary); padding: 1px 4px; border-radius: 3px; font-size: 11px;">identifier.cache</code> 的目录），或指定一个新目录。多工具共享可避免重复扫描符号表
+                                指向已有的 vol3 缓存目录（包含 <code style="background: var(--bg-tertiary); padding: 1px 4px; border-radius: 3px; font-size: 11px;">identifier.cache</code> 的目录），或指定一个新目录（不存在时自动创建）。该文件记录符号表的绝对路径，只有在符号表位置也相同的工具之间共享才能省去重复扫描。<b>保存后需重启生效</b>
                             </div>
                         </div>
                         <div class="settings-item-status" id="cachePathStatus"></div>
@@ -8234,8 +8234,12 @@
                         if (resetBtn) resetBtn.addEventListener('click', () => this.resetSymbolsOsPath(key));
                     });
 
+                    const cachePathInput = document.getElementById('customCachePath');
                     const browseCacheDirBtn = document.getElementById('browseCacheDirBtn');
                     const resetCacheBtn = document.getElementById('resetCacheBtn');
+                    if (cachePathInput) {
+                        cachePathInput.addEventListener('input', () => this.validateCachePath());
+                    }
                     if (browseCacheDirBtn) {
                         browseCacheDirBtn.addEventListener('click', () => this.browseCachePath());
                     }
@@ -8243,6 +8247,7 @@
                         resetCacheBtn.addEventListener('click', () => {
                             const input = document.getElementById('customCachePath');
                             if (input) input.value = '';
+                            this.validateCachePath('');
                         });
                     }
 
@@ -10883,10 +10888,12 @@
                                 this._originalSymbolsMode = 'general';
                             }
 
+                            this._defaultCachePath = result.default_cache_path || '';
                             const customCachePathInput = document.getElementById('customCachePath');
                             if (customCachePathInput) {
                                 customCachePathInput.value = settings.custom_cache_path || '';
                                 this._originalCachePath = settings.custom_cache_path || '';
+                                this.validateCachePath(settings.custom_cache_path || '');
                             }
 
                             this.renderQuickScanConfig(settings.quick_scan);
@@ -11131,12 +11138,75 @@
                 async browseCachePath() {
                     try {
                         const result = await window.pywebview.api.select_directory_dialog();
-                        if (result && result.status === 'success' && result.path) {
-                            const input = document.getElementById('customCachePath');
-                            if (input) input.value = result.path;
+                        if (!result || result.status !== 'success') {
+                            if (result && result.status !== 'cancelled') {
+                                this.toast('error', '选择目录失败', (result && result.message) || '未知错误');
+                            }
+                            return;
                         }
+                        const selected = result.data && result.data.path;
+                        if (!selected) {
+                            this.toast('error', '选择目录失败', '未获取到目录路径');
+                            return;
+                        }
+                        const input = document.getElementById('customCachePath');
+                        if (input) input.value = selected;
+                        this.validateCachePath(selected);
                     } catch (e) {
                         console.error('选择缓存目录失败:', e);
+                        this.toast('error', '选择目录失败', e.message || '未知错误');
+                    }
+                }
+
+                validateCachePath(pathOverride) {
+                    const statusElement = document.getElementById('cachePathStatus');
+                    if (!statusElement) return;
+
+                    const input = document.getElementById('customCachePath');
+                    const raw = pathOverride !== undefined ? pathOverride : (input ? input.value : '');
+                    const path = String(raw || '').trim();
+
+                    if (!path) {
+                        const defaultPath = this._defaultCachePath || '';
+                        statusElement.innerHTML = defaultPath
+                            ? this.cachePathHint(`未设置：使用 Volatility 默认缓存目录 ${this.escapeHtml(defaultPath)}`, 'valid', true)
+                            : this.cachePathHint('未设置：使用 Volatility 默认缓存目录', 'valid', false);
+                        return;
+                    }
+                    if (/[/\\]identifier\.cache$/i.test(path)) {
+                        statusElement.innerHTML = this.cachePathHint('已指定 identifier.cache，将使用所在目录（保存时验证）', 'valid', true);
+                        return;
+                    }
+                    const hasPathSep = path.includes('/') || path.includes('\\') || /^[A-Za-z]:/.test(path);
+                    statusElement.innerHTML = hasPathSep
+                        ? this.cachePathHint('路径格式正确（保存时创建并验证目录，需重启生效）', 'valid', true)
+                        : this.cachePathHint('请输入有效的目录路径', 'invalid', false);
+                }
+
+                cachePathHint(message, state, canOpen) {
+                    const button = canOpen && this.isWebView
+                        ? '<button class="btn btn-secondary" style="margin-left:8px;padding:2px 10px;font-size:12px;line-height:1.4;" onclick="app.openCacheDir()">打开目录</button>'
+                        : '';
+                    return `<span class="status-${state}">${message}</span>${button}`;
+                }
+
+                async openCacheDir() {
+                    if (!this.isWebView) {
+                        this.toast('error', '功能不可用', '此功能仅在桌面应用中可用');
+                        return;
+                    }
+                    const input = document.getElementById('customCachePath');
+                    const typed = input ? input.value.trim() : '';
+                    try {
+                        const result = await window.pywebview.api.open_cache_directory(typed);
+                        if (!result || result.status !== 'success') {
+                            this.toast('error', '打开失败', (result && result.message) || '未知错误');
+                            return;
+                        }
+                        this.toast('success', '已打开缓存目录', typed || this._defaultCachePath || '');
+                    } catch (e) {
+                        console.error('打开缓存目录失败:', e);
+                        this.toast('error', '打开失败', e.message || '未知错误');
                     }
                 }
 

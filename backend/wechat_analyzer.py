@@ -14,6 +14,8 @@ import copy
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Callable
 
+from backend.volatility_wrapper import VOL_LAUNCHER_CODE, is_packaged_runtime
+
 logger = logging.getLogger(__name__)
 
 
@@ -86,8 +88,16 @@ class WeChatAnalyzer:
         if vol_path:
             cmd = [vol_path, '-f', self.image_path]
         else:
-            python = shutil.which('python3') or shutil.which('python') or sys.executable
-            cmd = [python, '-m', 'volatility3', '-f', self.image_path]
+            python = shutil.which('python3') or shutil.which('python')
+            if not python and not is_packaged_runtime():
+                python = sys.executable
+            if not python:
+                raise RuntimeError(
+                    '未找到 Volatility 3：系统里既没有 vol 命令，也没有可用的 '
+                    'Python 解释器。请安装 Volatility 3 '
+                    '(pip install volatility3==2.27.0)，或在设置中指定 vol 路径。'
+                )
+            cmd = [python, '-c', VOL_LAUNCHER_CODE, '-f', self.image_path]
 
         if self._symbols_dir and Path(self._symbols_dir).exists():
             cmd.extend(['-s', str(self._symbols_dir)])
