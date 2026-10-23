@@ -496,6 +496,89 @@ class VolatilityWrapper:
         logger.info(f"JSON renderer 解析 {plugin_name} 结果: {len(results)} 条记录")
         return results
 
+    def _parse_json_pagecache_rows(self, output: str, plugin_name: str) -> List[Dict]:
+        payload = self._extract_json_payload(output)
+        if not payload:
+            return []
+        try:
+            data = json.loads(payload)
+        except Exception as e:
+            logger.warning(f"解析 JSON renderer 输出失败: {e}")
+            return []
+
+        keys = [
+            'SuperblockAddr', 'MountPoint', 'Device', 'InodeNum', 'InodeAddr',
+            'FileType', 'InodePages', 'CachedPages', 'FileMode', 'AccessTime',
+            'ModificationTime', 'ChangeTime', 'FilePath', 'InodeSize',
+            'Recovered FileSize',
+        ]
+
+        def cell(row: Dict, *names: str) -> Any:
+            for name in names:
+                if name in row:
+                    value = row[name]
+                    if isinstance(value, dict):
+                        for key in ('value', 'Value', 'text', 'Text', 'repr', 'Repr'):
+                            if key in value:
+                                return value[key]
+                    return value
+            return ''
+
+        def as_int(value: Any) -> int:
+            if isinstance(value, bool):
+                return 0
+            if isinstance(value, int):
+                return value
+            text = str(value or '').replace(',', '').strip()
+            try:
+                return int(float(text)) if text else 0
+            except ValueError:
+                return 0
+
+        def as_hex(value: Any) -> str:
+            if isinstance(value, int) and not isinstance(value, bool):
+                return hex(value)
+            text = str(value or '').strip()
+            if text.isdigit():
+                return hex(int(text))
+            return text
+
+        results: List[Dict] = []
+        for row in self._flatten_json_rows(data):
+            if isinstance(row, list):
+                row = dict(zip(keys, row))
+            if not isinstance(row, dict):
+                continue
+
+            values = row.get('values')
+            if isinstance(values, dict):
+                row = values
+            elif isinstance(values, list):
+                row = dict(zip(keys, values))
+
+            path_value = str(cell(row, 'FilePath', 'path', 'Path') or '')
+            results.append({
+                'superblock_addr': as_hex(cell(row, 'SuperblockAddr')),
+                'mountpoint': str(cell(row, 'MountPoint') or ''),
+                'device': str(cell(row, 'Device') or ''),
+                'inode_num': as_int(cell(row, 'InodeNum')),
+                'inode_addr': as_hex(cell(row, 'InodeAddr')),
+                'file_type': str(cell(row, 'FileType') or ''),
+                'inode_pages': as_int(cell(row, 'InodePages')),
+                'cached_pages': as_int(cell(row, 'CachedPages')),
+                'file_mode': str(cell(row, 'FileMode') or ''),
+                'access_time': str(cell(row, 'AccessTime') or ''),
+                'modification_time': str(cell(row, 'ModificationTime') or ''),
+                'change_time': str(cell(row, 'ChangeTime') or ''),
+                'file_path': path_value,
+                'path': path_value,
+                'inode_size': as_int(cell(row, 'InodeSize')),
+                '_can_download': True,
+            })
+
+        logger.info(f"JSON renderer 解析 {plugin_name} 结果: {len(results)} 条记录")
+        return results
+
     def _json_retry_parser_for(self, plugin_name: str) -> Optional[Any]:
         """返回插件对应的 JSON renderer 输出解析器，无解析器返回 None。"""
         lower = plugin_name.lower()
@@ -503,6 +586,8 @@ class VolatilityWrapper:
             return self._parse_json_filescan_rows
         if 'cmdscan' in lower or 'consoles' in lower:
             return self._parse_json_cmdscan_rows
+        if 'pagecache' in lower and 'files' in lower:
+            return self._parse_json_pagecache_rows
         return None
 
     def _retry_with_json_renderer(
