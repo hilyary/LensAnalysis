@@ -3801,7 +3801,10 @@ class APIHandler:
                 from webview import FileDialog
                 selected = webview.windows[0].create_file_dialog(
                     FileDialog.OPEN,
-                    file_types=('All files (*.*)',),
+                    file_types=(
+                        'Volatility symbol files (*.zip;*.json;*.xz)',
+                        'All files (*.*)',
+                    ),
                 )
             except Exception as exc:
                 return {'status': 'error', 'message': f'打开符号表选择器失败: {exc}'}
@@ -3865,6 +3868,36 @@ class APIHandler:
                 target_name = candidate_name
             target_dir.mkdir(parents=True, exist_ok=True)
             target_path = target_dir / target_name
+
+            def _installed_symbol_verified() -> bool:
+                verification = self.get_symbol_status()
+                verified_info = ((verification.get('data') or {}).get('os_types') or {}).get(os_type) or {}
+                return bool(
+                    (verified_info.get('pdb_info') or {}).get('symbol_exists')
+                    if os_type == 'windows'
+                    else verified_info.get('kernel_symbol_exists')
+                )
+
+            same_file = False
+            if target_path.exists():
+                try:
+                    same_file = os.path.samefile(str(source_path), str(target_path))
+                except OSError:
+                    same_file = source_path.resolve() == target_path.resolve()
+
+            if same_file:
+                if not _installed_symbol_verified():
+                    return {
+                        'status': 'error',
+                        'error_type': 'symbol_mismatch',
+                        'message': f'符号表校验未通过。当前需要：{expected}',
+                    }
+                return {
+                    'status': 'success',
+                    'message': f'符号表已存在并通过校验：{target_path.name}',
+                    'data': {'os_type': os_type, 'path': str(target_path), 'verified': True},
+                }
+
             backup_path = None
             if target_path.exists():
                 backup_path = target_path.with_name(f'.{target_path.name}.{uuid.uuid4().hex}.bak')
@@ -3886,14 +3919,7 @@ class APIHandler:
                 else:
                     shutil.copy2(str(source_path), str(target_path))
 
-                verification = self.get_symbol_status()
-                verified_info = ((verification.get('data') or {}).get('os_types') or {}).get(os_type) or {}
-                verified = bool(
-                    (verified_info.get('pdb_info') or {}).get('symbol_exists')
-                    if os_type == 'windows'
-                    else verified_info.get('kernel_symbol_exists')
-                )
-                if not verified:
+                if not _installed_symbol_verified():
                     target_path.unlink(missing_ok=True)
                     if backup_path and backup_path.exists():
                         shutil.move(str(backup_path), str(target_path))
@@ -6259,11 +6285,14 @@ except Exception as e:
             cached_result = self._load_from_cache_file(cache_key)
             filescan_cache_plugins = {'filescan', 'eventlog'}
             netscan_cache_plugins = {'netscan'}
+            pagecache_cache_plugins = {'linux_pagecache_files'}
             if cached_result:
                 if plugin_id in filescan_cache_plugins and cached_result.get('_cache_format_version') != 'filescan_utf8_json_v1':
                     logger.info(f"忽略旧版 {plugin_id} 缓存，将重新执行以避免 Windows 文本编码导致的半截结果")
                 elif plugin_id in netscan_cache_plugins and cached_result.get('_cache_format_version') != 'netscan_netstat_fallback_v2':
                     logger.info("忽略旧版 netscan 缓存，将重新执行以支持 netstat 后备解析")
+                elif plugin_id in pagecache_cache_plugins and cached_result.get('_cache_format_version') != 'pagecache_full_tree_v2':
+                    logger.info("忽略旧版 pagecache 缓存，将重新执行以恢复完整的 rootfs 目录树并去掉表头行")
                 else:
                     logger.info(f"从缓存加载结果: {plugin_id}")
                     self.analysis_tasks[task_id]['status'] = 'completed'
@@ -6372,6 +6401,8 @@ except Exception as e:
 
             if plugin_id in filescan_cache_plugins:
                 result['_cache_format_version'] = 'filescan_utf8_json_v1'
+            if plugin_id in pagecache_cache_plugins:
+                result['_cache_format_version'] = 'pagecache_full_tree_v2'
             if plugin_id in netscan_cache_plugins:
                 result['_cache_format_version'] = 'netscan_netstat_fallback_v2'
                 if len(result.get('results') or []) == 0 and not result.get('_info'):
@@ -8797,10 +8828,41 @@ except Exception as e:
             logger.error(f"从注册表获取服务失败: {str(e)}")
             return None
 
+    def _clear_symbol_build_caches(self) -> str:
+        import shutil
+
+        cleared = []
+
+        ddeb_dir = self._cache_dir / 'debs'
+        if ddeb_dir.is_dir():
+            try:
+                size = sum(f.stat().st_size for f in ddeb_dir.rglob('*') if f.is_file())
+                shutil.rmtree(ddeb_dir)
+                logger.info(f"已清除 ddeb 缓存: {ddeb_dir} ({size / 1024 / 1024:.0f} MB)")
+                cleared.append(f'ddeb 缓存（{size / 1024 / 1024:.0f} MB）')
+            except Exception as e:
+                logger.warning(f"清除 ddeb 缓存失败: {e}")
+
+        temp_base = self._user_data_dir / 'temp'
+        if temp_base.exists():
+            removed = 0
+            for temp_dir in temp_base.glob('symbol_build_*'):
+                try:
+                    shutil.rmtree(temp_dir)
+                    removed += 1
+                except Exception as e:
+                    logger.warning(f"清除符号表临时目录失败 {temp_dir}: {e}")
+            if removed:
+                logger.info(f"已清除 {removed} 个符号表临时目录")
+                cleared.append(f'符号表临时文件（{removed} 个）')
+
+        return '、'.join(cleared)
+
     def clear_cache(self) -> Dict[str, Any]:
         try:
             import shutil
             cache_dir = self._get_image_cache_dir()
+            symbol_cache_msg = self._clear_symbol_build_caches()
 
             if self.current_image:
                 if cache_dir.exists() and cache_dir != self._cache_dir:
@@ -8816,7 +8878,8 @@ except Exception as e:
                     message = '当前镜像没有缓存'
             else:
                 if self._cache_dir.exists():
-                    project_dirs = [d for d in self._cache_dir.iterdir() if d.is_dir()]
+                    project_dirs = [d for d in self._cache_dir.iterdir()
+                                    if d.is_dir() and d.name != 'debs']
                     count = len(project_dirs)
 
                     if count > 0:
@@ -8835,6 +8898,12 @@ except Exception as e:
                         message = '没有缓存需要清除'
                 else:
                     message = '没有缓存需要清除'
+
+            if symbol_cache_msg:
+                if message in ('当前镜像没有缓存', '没有缓存需要清除'):
+                    message = f'{symbol_cache_msg}已清除'
+                else:
+                    message = f'{message}，{symbol_cache_msg}已清除'
 
             return {
                 'status': 'success',
@@ -10791,7 +10860,7 @@ if __name__ == '__main__':
         try:
             from backend import __version__ as current_version
         except ImportError:
-            current_version = '1.1.0'
+            current_version = '1.1.1'
 
         gitee_owner = 'hilyary'
         gitee_repo = 'LensAnalysis-project'

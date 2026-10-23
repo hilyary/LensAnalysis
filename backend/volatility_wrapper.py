@@ -23,6 +23,66 @@ VOL_LAUNCHER_CODE = (
     "from volatility3.cli import main; sys.exit(main())"
 )
 
+VOL_COMPAT_PLUGIN_CODE = '''\
+import functools
+
+from volatility3.framework import exceptions
+from volatility3.framework.layers import intel
+
+_original_get_valid_table = getattr(intel.Intel, "_get_valid_table", None)
+
+
+def _lens_install() -> None:
+    if _original_get_valid_table is None:
+        return
+    if getattr(_original_get_valid_table, "_lens_last_byte_tolerant", False):
+        return
+
+    @functools.lru_cache(maxsize=1025)
+    def _get_valid_table(self, base_address):
+        try:
+            return _original_get_valid_table(self, base_address)
+        except exceptions.InvalidAddressException:
+            pass
+
+        try:
+            base_layer = self._context.layers[self._base_layer]
+        except Exception:
+            return None
+        if base_address + self.page_size - 2 != base_layer.maximum_address:
+            return None
+        try:
+            table = self._context.layers.read(
+                self._base_layer, base_address, self.page_size - 1
+            )
+        except exceptions.InvalidAddressException:
+            return None
+        table += bytes(1)
+        if table == table[: self._entry_size] * self._entry_number:
+            return None
+        return table
+
+    _get_valid_table._lens_last_byte_tolerant = True
+    intel.Intel._get_valid_table = _get_valid_table
+
+
+try:
+    _lens_install()
+except Exception:
+    pass
+'''
+
+
+def _ensure_compat_plugin(patches_dir: Path) -> None:
+    patch_file = patches_dir / 'lens_lime_boundary.py'
+    try:
+        patches_dir.mkdir(parents=True, exist_ok=True)
+        if not patch_file.exists() or patch_file.read_text(encoding='utf-8') != VOL_COMPAT_PLUGIN_CODE:
+            patch_file.write_text(VOL_COMPAT_PLUGIN_CODE, encoding='utf-8')
+            logger.info(f"已更新 Volatility 兼容补丁: {patch_file}")
+    except OSError as e:
+        logger.warning(f"写入 Volatility 兼容补丁失败: {e}")
+
 
 def is_packaged_runtime() -> bool:
     if getattr(sys, 'frozen', False):
@@ -146,6 +206,8 @@ class VolatilityWrapper:
             self._symbols_dir = self._get_symbols_dir()
 
         self._plugins_dir = self._get_plugins_dir()
+        self._patches_dir = self._plugins_dir.parent / 'patches'
+        _ensure_compat_plugin(self._patches_dir)
 
         config = self._load_config()
         settings = config.get('settings', {})
@@ -1106,6 +1168,12 @@ class VolatilityWrapper:
         plugins_dir.mkdir(parents=True, exist_ok=True)
         return plugins_dir
 
+    def _get_patches_dir(self) -> Path:
+        patches_dir = getattr(self, '_patches_dir', None)
+        if patches_dir is None:
+            patches_dir = Path(self._plugins_dir).parent / 'patches'
+        return patches_dir
+
     @staticmethod
     def _get_volatility_cache_dirs() -> List[Path]:
         dirs = []
@@ -1218,10 +1286,11 @@ class VolatilityWrapper:
                 cmd.extend(['--cache-path', str(self._cache_path)])
                 logger.info(f"使用自定义缓存目录: {self._cache_path}")
 
+            plugin_dirs = [str(self._get_patches_dir())]
             if use_custom_plugins and needs_custom_plugins:
-                plugins_dir = str(self._plugins_dir)
-                cmd.extend(['-p', plugins_dir])
-                logger.info(f"使用自定义插件目录: {plugins_dir}")
+                plugin_dirs.append(str(self._plugins_dir))
+                logger.info(f"使用自定义插件目录: {self._plugins_dir}")
+            cmd.extend(['-p', ';'.join(plugin_dirs)])
 
             logger.info(f"DEBUG _run_volatility: symbol_file_path={symbol_file_path}, use_symbols={use_symbols}")
             if symbol_file_path and os.path.exists(str(symbol_file_path)):
@@ -1569,8 +1638,10 @@ class VolatilityWrapper:
             if output_dir:
                 cmd.extend(['-o', str(Path(output_dir).resolve())])
 
+            plugin_dirs = [str(self._get_patches_dir())]
             if os.path.exists(self._plugins_dir):
-                cmd.extend(['--plugin-dirs', str(self._plugins_dir)])
+                plugin_dirs.append(str(self._plugins_dir))
+            cmd.extend(['--plugin-dirs', ';'.join(plugin_dirs)])
 
             if self._cache_path:
                 cmd.extend(['--cache-path', str(self._cache_path)])
@@ -2458,6 +2529,8 @@ class VolatilityWrapper:
                 }
 
         elif 'pagecache' in plugin_name and 'files' in plugin_name.lower():
+            if not re.match(r'^0x[0-9a-fA-F]+$', str(parts[0] or '')):
+                return None
             if len(parts) >= 13:
                 path_value = str(parts[12]) if len(parts) > 12 else ''
                 inode_size_val = 0

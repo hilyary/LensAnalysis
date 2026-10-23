@@ -11,13 +11,21 @@ import gzip
 import tarfile
 import json
 from pathlib import Path
-from typing import Optional, Dict, Any, Callable, Tuple
+from typing import Optional, Dict, Any, Callable, Tuple, List
 from urllib.request import urlopen, Request, build_opener, ProxyHandler, HTTPSHandler
 from urllib.error import URLError, HTTPError
 from html.parser import HTMLParser
 import ssl
 
 logger = logging.getLogger(__name__)
+
+UBUNTU_MIRRORS = (
+    'https://mirrors.tuna.tsinghua.edu.cn/ubuntu/',
+    'https://mirrors.aliyun.com/ubuntu/',
+    'https://mirrors.bfsu.edu.cn/ubuntu/',
+    'https://mirror.nju.edu.cn/ubuntu/',
+    'https://mirrors.ustc.edu.cn/ubuntu/',
+)
 
 
 def _get_subprocess_kwargs(**kwargs) -> Dict[str, Any]:
@@ -339,13 +347,25 @@ class SymbolTableBuilder:
                     'version_info': version_info.__dict__
                 }
 
-            if version_info.distro != 'macOS':
+            if version_info.distro != 'macOS' and ddeb_path.exists():
                 try:
-                    if ddeb_path.exists():
-                        ddeb_path.unlink()
-                        logger.debug(f"已删除 ddeb 文件: {ddeb_path}")
+                    in_temp = self.temp_dir and self.temp_dir in ddeb_path.parents
+                    if in_temp:
+                        cache_dir = self._get_ddeb_cache_dir()
+                        cached_path = cache_dir / ddeb_path.name
+                        if cached_path.exists():
+                            cached_path.unlink()
+                        shutil.move(str(ddeb_path), str(cached_path))
+                        logger.info(f"已将 ddeb 缓存到: {cached_path}")
+                    else:
+                        logger.info(f"使用本地 ddeb，保留原文件: {ddeb_path}")
                 except Exception as e:
-                    logger.warning(f"删除 ddeb 文件失败: {e}")
+                    logger.warning(f"缓存 ddeb 文件失败，改为删除: {e}")
+                    try:
+                        if ddeb_path.exists():
+                            ddeb_path.unlink()
+                    except Exception:
+                        pass
 
             self.progress.complete_stage('extract')
 
@@ -452,33 +472,90 @@ class SymbolTableBuilder:
             logger.error(f"不支持的发行版: {version_info.distro}")
             return None
 
-    def _search_local_dbgsym(self, kernel_ver: str, pkg_ver: str) -> Optional[Path]:
+    def _get_ddeb_cache_dir(self) -> Path:
+        cache_dir = self.data_dir / 'cache' / 'debs'
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir
+
+    @staticmethod
+    def _is_complete_deb_archive(path: Path) -> bool:
+        try:
+            total_size = path.stat().st_size
+            if total_size < 1000000:
+                return False
+
+            with open(path, 'rb') as f:
+                if f.read(8) != b'!<arch>\n':
+                    return False
+
+                offset = 8
+                members = 0
+                while offset + 60 <= total_size:
+                    f.seek(offset)
+                    header = f.read(60)
+                    if len(header) < 60:
+                        return False
+                    raw_size = header[48:58].decode('ascii', errors='ignore').strip()
+                    if not raw_size.isdigit():
+                        return False
+                    member_size = int(raw_size)
+                    offset += 60 + member_size + (member_size % 2)
+                    if offset > total_size:
+                        return False
+                    members += 1
+
+                return offset == total_size and members >= 3
+        except Exception:
+            return False
+
+    def _search_local_dbgsym(self, kernel_ver: str, pkg_ver: str = '') -> Optional[Path]:
         patterns = [
-            f"**/linux-image-unsigned-{kernel_ver}-dbgsym_*.ddeb",
-            f"**/linux-image-{kernel_ver}-dbgsym_*.ddeb",
-            f"**/*{kernel_ver}*dbgsym*.ddeb",
+            f"linux-image-unsigned-{kernel_ver}-dbgsym_*.ddeb",
+            f"linux-image-{kernel_ver}-dbgsym_*.ddeb",
+            f"*{kernel_ver}*dbgsym*.ddeb",
         ]
 
         search_paths = [
+            self._get_ddeb_cache_dir(),
             Path.home() / "Downloads",
             Path.home() / "Documents",
-            Path.home(),
+            Path.home() / "Desktop",
             self.data_dir,
             self.symbols_dir,
         ]
 
+        seen = set()
         for search_path in search_paths:
             if not search_path.exists():
                 continue
             for pattern in patterns:
-                matches = list(search_path.glob(pattern))
-                if matches:
-                    found = matches[0]
-                    if found.exists() and found.stat().st_size > 1000000:
+                for found in search_path.glob(pattern):
+                    if found in seen:
+                        continue
+                    seen.add(found)
+                    if self._is_complete_deb_archive(found):
                         logger.info(f"找到本地 ddeb 文件: {found}")
                         return found
+                    logger.warning(f"忽略不完整的 ddeb 文件: {found}")
 
         return None
+
+    def _ubuntu_source_packages(self, version_info: LinuxVersionInfo) -> List[str]:
+        pkg_ver = version_info.package_version or ''
+        major_minor = ''
+        if version_info.major_version:
+            major_minor = '.'.join(version_info.major_version.split('.')[:2])
+
+        is_hwe = bool(major_minor) and '~' in pkg_ver
+
+        sources = []
+        if is_hwe:
+            sources.extend([f'linux-hwe-{major_minor}', 'linux-hwe'])
+        sources.append('linux')
+        if is_hwe:
+            sources.extend([f'linux-signed-hwe-{major_minor}', 'linux-signed-hwe'])
+        sources.append('linux-signed')
+        return list(dict.fromkeys(sources))
 
     def _download_ubuntu_dbgsym(self, version_info: LinuxVersionInfo) -> Optional[Path]:
         kernel_ver = version_info.kernel_version
@@ -489,6 +566,12 @@ class SymbolTableBuilder:
             if not pkg_ver:
                 logger.error("无法确定包版本")
                 return None
+
+        local_ddeb = self._search_local_dbgsym(kernel_ver, pkg_ver)
+        if local_ddeb:
+            logger.info(f"使用本地调试符号包，跳过下载: {local_ddeb}")
+            self.progress.report('download', 100, f'使用本地调试符号包: {local_ddeb.name}')
+            return local_ddeb
 
         package_candidates = [
             (f"linux-image-unsigned-{kernel_ver}-dbgsym_{pkg_ver}_amd64.ddeb", "ddeb"),
@@ -501,12 +584,15 @@ class SymbolTableBuilder:
         for pkg_name, pkg_type in package_candidates:
             pkg_path = Path(self.temp_dir) / pkg_name
 
-            urls = [
-                f"https://mirrors.ustc.edu.cn/ubuntu/pool/main/l/linux/{pkg_name}",
-                f"https://mirrors.ustc.edu.cn/ubuntu-debug/pool/main/l/linux/{pkg_name}",
-                f"http://ddebs.ubuntu.com/pool/main/l/linux/{pkg_name}",
-                f"https://launchpad.net/ubuntu/+archive/primary/+files/{pkg_name}",
-            ]
+            urls = []
+            if pkg_type == 'ddeb':
+                for source_pkg in self._ubuntu_source_packages(version_info):
+                    urls.append(f"http://ddebs.ubuntu.com/pool/main/l/{source_pkg}/{pkg_name}")
+            else:
+                for source_pkg in self._ubuntu_source_packages(version_info):
+                    for mirror in UBUNTU_MIRRORS:
+                        urls.append(f"{mirror}pool/main/l/{source_pkg}/{pkg_name}")
+            urls.append(f"https://launchpad.net/ubuntu/+archive/primary/+files/{pkg_name}")
 
             for url in urls:
                 try:
@@ -523,7 +609,7 @@ class SymbolTableBuilder:
                     continue
 
         logger.debug("直接下载失败，尝试从镜像站搜索...")
-        result = self._search_mirror_dbgsym(kernel_ver, pkg_ver)
+        result = self._search_mirror_dbgsym(version_info)
         if result:
             return result
 
@@ -542,15 +628,17 @@ class SymbolTableBuilder:
         logger.error("可能的解决方案:")
         logger.error("1. 尝试从 GitHub 下载预编译的符号表")
         logger.error("2. 手动从 Launchpad 下载 ddeb 包")
-        logger.error(f"   https://launchpad.net/ubuntu/+source/linux/{pkg_ver}")
+        source_pkg = self._ubuntu_source_packages(version_info)[0]
+        logger.error(f"   https://launchpad.net/ubuntu/+source/{source_pkg}/{pkg_ver}")
         logger.error("3. 检查是否有其他内核版本的内存镜像")
         logger.error("=" * 60)
         return None
 
-    def _search_mirror_dbgsym(self, kernel_ver: str, pkg_ver: str) -> Optional[Path]:
+    def _search_mirror_dbgsym(self, version_info: LinuxVersionInfo) -> Optional[Path]:
+        kernel_ver = version_info.kernel_version
         mirrors = [
-            "https://mirrors.ustc.edu.cn/ubuntu/pool/main/l/linux/",
-            "https://mirrors.ustc.edu.cn/ubuntu-debug/pool/main/l/linux/",
+            f"http://ddebs.ubuntu.com/pool/main/l/{source_pkg}/"
+            for source_pkg in self._ubuntu_source_packages(version_info)
         ]
 
         search_patterns = [
@@ -629,8 +717,17 @@ class SymbolTableBuilder:
         search_urls = []
 
         if pkg_ver:
-            search_urls.append(f"https://launchpad.net/ubuntu/+source/linux/{pkg_ver}")
-            search_urls.append(f"https://launchpad.net/ubuntu/+source/linux-signed/{pkg_ver}")
+            for source_pkg in self._ubuntu_source_packages(version_info):
+                search_urls.append(f"https://launchpad.net/ubuntu/+source/{source_pkg}/{pkg_ver}")
+            if version_info.distro_codename:
+                for binary in (
+                    f"linux-image-unsigned-{kernel_ver}-dbgsym",
+                    f"linux-image-{kernel_ver}-dbgsym",
+                ):
+                    search_urls.append(
+                        f"https://launchpad.net/ubuntu/{version_info.distro_codename}/"
+                        f"{version_info.arch}/{binary}/{pkg_ver}"
+                    )
 
         for search_url in search_urls:
             try:
@@ -1136,31 +1233,35 @@ class SymbolTableBuilder:
         else:
             return build_opener(https_handler)
 
-    def _fetch_url(self, url: str) -> str:
+    @staticmethod
+    def _is_launchpad_url(url: str) -> bool:
+        return 'launchpad.net' in url or 'launchpadlibrarian.net' in url
+
+    def _prepare_request(self, url: str, for_html: bool = False) -> Request:
         request = Request(url)
-        request.add_header('User-Agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-        request.add_header('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8')
-        request.add_header('Accept-Language', 'zh-CN,zh;q=0.9,en;q=0.8')
-        request.add_header('Accept-Encoding', 'gzip, deflate, br')
-        request.add_header('Referer', url)
-        request.add_header('Connection', 'keep-alive')
+        if not self._is_launchpad_url(url):
+            request.add_header('User-Agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+            request.add_header('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8')
+            request.add_header('Accept-Language', 'zh-CN,zh;q=0.9,en;q=0.8')
+            request.add_header('Referer', url)
+            request.add_header('Connection', 'keep-alive')
+        if for_html:
+            request.add_header('Accept-Encoding', 'gzip')
+        return request
+
+    def _fetch_url(self, url: str) -> str:
+        request = self._prepare_request(url, for_html=True)
 
         opener = self._create_opener(url)
 
         with opener.open(request, timeout=30) as response:
             data = response.read()
-            if response.headers.get('Content-Encoding') == 'gzip':
+            if (response.headers.get('Content-Encoding') or '').lower() == 'gzip':
                 data = gzip.decompress(data)
             return data.decode('utf-8', errors='ignore')
 
     def _download_file(self, url: str, output_path: Path, progress_callback: Optional[Callable] = None):
-        request = Request(url)
-        request.add_header('User-Agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-        request.add_header('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8')
-        request.add_header('Accept-Language', 'zh-CN,zh;q=0.9,en;q=0.8')
-        request.add_header('Accept-Encoding', 'gzip, deflate, br')
-        request.add_header('Referer', url)
-        request.add_header('Connection', 'keep-alive')
+        request = self._prepare_request(url)
 
         opener = self._create_opener(url)
 
